@@ -42,8 +42,22 @@ follows that file while you play:
   it waited for the server to acknowledge.
 - delayed engine ticks, which is the game missing frames.
 
-press `i` and play. every problem the game reports appears with how long it lasted, and
-you get a session total: how many stalls, the worst one, and how much time you lost.
+press `i` and play. every problem the game reports appears with how long it lasted.
+
+press `i` again when you are done and it writes a report:
+
+- how many stalls per minute, the worst one, and how much time you lost.
+- **what is causing it.** a stall that lands next to an engine frame drop was your
+  machine struggling. one that arrives on its own points at the path your input and
+  packets take. the split decides which fixes are suggested, and a near even split is
+  reported as both rather than picking one.
+- the fixes that target that cause, already picked.
+- how this session compares to your last one.
+
+so the loop is: play a match, read the report, apply the fixes, restart, play another,
+and the next report tells you whether it actually helped. short sessions are labelled as
+a hint rather than proof, and comparisons ignore small moves because stall rates bounce
+around.
 
 ## what it can and cannot see
 

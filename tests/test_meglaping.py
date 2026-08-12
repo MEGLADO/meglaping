@@ -461,3 +461,68 @@ def test_ingame_says_whether_it_is_live_or_a_past_session(tmp_path, monkeypatch)
     assert not past.session.live
     assert "last session" in past.session.source
     assert past.session.length_s > 0
+
+
+def _session(hitches, ticks=(), length=600.0, bad=0):
+    from meglaping import ingame
+
+    s = ingame.Session(length_s=length)
+    for at, ms in hitches:
+        s.add(ingame.Event(ingame.HITCH, at, ms, ""))
+    for at in ticks:
+        s.add(ingame.Event(ingame.TICK, at, 200.0, ""))
+    for i in range(bad):
+        s.add(ingame.Event(ingame.BAD_CONNECTION, 10.0 + i, 30.0, ""))
+    return s
+
+
+def test_diagnosis_blames_the_pc_when_stalls_come_with_frame_drops():
+    from meglaping import ingame
+
+    hitches = [(60 + i * 30, 200) for i in range(6)]
+    ticks = [h[0] + 1 for h in hitches]  # a frame drop beside every stall
+    d = ingame.diagnose(_session(hitches, ticks))
+    assert d.paired == 6 and d.cause == "your pc, not the connection"
+    assert "gamedvr-off" in d.fix_ids
+
+
+def test_diagnosis_blames_the_connection_when_stalls_stand_alone():
+    from meglaping import ingame
+
+    d = ingame.diagnose(_session([(60 + i * 30, 200) for i in range(6)], ticks=(), bad=2))
+    assert d.paired == 0 and d.cause == "the connection"
+    assert "eee-off" in d.fix_ids
+
+
+def test_diagnosis_admits_when_it_is_a_mix():
+    """Half and half is two problems, and calling it one would be wrong."""
+    from meglaping import ingame
+
+    hitches = [(60 + i * 30, 200) for i in range(6)]
+    d = ingame.diagnose(_session(hitches, ticks=[hitches[0][0] + 1, hitches[1][0] + 1, hitches[2][0] + 1]))
+    assert d.cause == "a bit of both"
+
+
+def test_diagnosis_uses_rates_so_long_sessions_are_not_punished():
+    from meglaping import ingame
+
+    short = ingame.diagnose(_session([(30, 200), (60, 200)], length=120))    # 1.0/min
+    long_ = ingame.diagnose(_session([(30 * i, 200) for i in range(1, 7)], length=1800))  # 0.2/min
+    assert short.per_minute > long_.per_minute
+    assert long_.verdict == "smooth" and short.verdict == "noticeable"
+
+
+def test_short_sessions_are_flagged_as_unreliable():
+    from meglaping import ingame
+
+    d = ingame.diagnose(_session([(10, 200)], length=60))
+    assert not d.confident and "hint rather than proof" in d.advice
+
+
+def test_comparison_ignores_small_moves():
+    from meglaping import ingame
+
+    same, _ = ingame.compare({"per_minute": 1.05, "worst_ms": 300}, {"per_minute": 1.0, "worst_ms": 300})
+    better, _ = ingame.compare({"per_minute": 0.4, "worst_ms": 150}, {"per_minute": 1.6, "worst_ms": 400})
+    worse, _ = ingame.compare({"per_minute": 2.0, "worst_ms": 500}, {"per_minute": 0.5, "worst_ms": 200})
+    assert (same, better, worse) == ("same", "better", "worse")

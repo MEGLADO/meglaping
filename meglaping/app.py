@@ -402,7 +402,7 @@ class MeglaPing(App):
         """Toggle following the game's own telemetry."""
         if self.watch_timer is not None:
             self._stop_watching()
-            self._set_status(f"stopped. {self.watcher.session.summary()}" if self.watcher else "stopped.")
+            self.run_worker(self._show_report(), exclusive=False)
             return
         self.watcher = ingame.Watcher(self.ctx.host.rl_logs if self.ctx else None)
         if not self.watcher.available:
@@ -474,6 +474,70 @@ class MeglaPing(App):
         )
         if not initial:
             self._set_status(session.summary())
+
+    async def _show_report(self) -> None:
+        """What the session showed, what it points at, and whether it beat last time."""
+        watcher = self.watcher
+        if not watcher or not watcher.session.events:
+            self._set_status("stopped. nothing was reported, so there is nothing to work with.")
+            return
+
+        session = watcher.session
+        diagnosis = ingame.diagnose(session)
+        previous = ingame.recent_sessions(1)
+        ingame.save_session(session, diagnosis)
+
+        await self._clear_body()
+        body = self.query_one("#body", VerticalScroll)
+        self._set_title("session report")
+
+        tone = {"smooth": GOOD, "noticeable": WARN}.get(diagnosis.verdict, BAD)
+        await body.mount(Static(
+            f"[{tone}]{diagnosis.verdict}[/]   {diagnosis.stalls} stalls in "
+            f"{diagnosis.minutes:.0f} min   [{tone}]{diagnosis.per_minute:.1f} per minute[/]   "
+            f"worst {diagnosis.worst_ms:.0f} ms   {diagnosis.lost_ms / 1000:.1f}s lost",
+            id="score",
+        ))
+
+        await body.mount(Label("what is causing it", classes="section"))
+        await body.mount(Static(f"[b]{diagnosis.cause}[/]\n{diagnosis.advice}", classes="callout"))
+
+        if previous:
+            verdict, why = ingame.compare(
+                {"per_minute": diagnosis.per_minute, "worst_ms": diagnosis.worst_ms}, previous[0]
+            )
+            colour = {"better": GOOD, "worse": BAD}.get(verdict, MUTED)
+            await body.mount(Label("against your last session", classes="section"))
+            await body.mount(Static(
+                f"[{colour}]{verdict}[/]  {why}\n"
+                f"[dim]last session {previous[0].get('at', '')}, "
+                f"{previous[0].get('stalls', 0)} stalls in {previous[0].get('minutes', 0)} min[/]",
+                classes="callout",
+            ))
+
+        suggested = [f for f in self._fixable if f.id in diagnosis.fix_ids]
+        if suggested:
+            self.selected = {f.id for f in suggested}
+            await body.mount(Label("worth fixing for this", classes="section"))
+            table = DataTable(cursor_type="row", zebra_stripes=True)
+            table.add_column("pick", key="pick")
+            table.add_columns("", "setting", "what you notice", "now", "should be")
+            for finding in suggested:
+                table.add_row(*self._row(finding), key=finding.id)
+            await body.mount(table)
+            self._refresh_fix_button()
+            self._set_status(
+                f"{len(suggested)} fixes target this. press fix, restart, then play another "
+                "match and press in-game again to compare."
+            )
+        else:
+            already = [t.title for t in tweaks.TWEAKS if t.id in diagnosis.fix_ids]
+            await body.mount(Static(
+                "the settings that would help are already set: " + ", ".join(already[:4])
+                + ".\nwhat is left is outside meglaping, usually background programs or hardware.",
+                classes="callout ok",
+            ))
+            self._set_status("nothing left to change for this. play another session to compare.")
 
     # --- apply --------------------------------------------------------------------
 

@@ -14,6 +14,8 @@ this can be derived from pinging a server, so it is read rather than inferred.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -192,3 +194,162 @@ class Watcher:
                     yield Event(MATCH, float(match.group(1)), 0.0,
                                 f"joined {self.session.server} at {self.session.server_ip}")
                 break
+
+
+# --- diagnosis ------------------------------------------------------------------------
+
+# A hitch and a frame drop this close together are the same underlying stall reported
+# twice, once by the input buffer and once by the engine tick.
+PAIRED_WINDOW_S = 3.0
+
+LOCAL_FIXES = ("gamedvr-off", "cpu-min-state", "one-frame-thread-lag")
+NETWORK_FIXES = ("eee-off", "flow-control-off", "network-throttling-off", "interrupt-moderation-off")
+INPUT_FIXES = ("usb-suspend-off", "cpu-min-state", "pcie-aspm-off")
+
+
+@dataclass
+class Diagnosis:
+    stalls: int = 0
+    minutes: float = 0.0
+    per_minute: float = 0.0
+    worst_ms: float = 0.0
+    lost_ms: float = 0.0
+    paired: int = 0          # stalls that came with an engine frame drop
+    verdict: str = ""        # smooth / noticeable / rough
+    cause: str = ""          # what the pattern points at
+    advice: str = ""
+    fix_ids: tuple[str, ...] = ()
+    confident: bool = True   # False when the session was too short to trust
+
+    @property
+    def paired_ratio(self) -> float:
+        return self.paired / self.stalls if self.stalls else 0.0
+
+
+def diagnose(session: Session) -> Diagnosis:
+    """Work out what the session's stalls point at.
+
+    Rates rather than totals, because a 20 minute session naturally collects more
+    stalls than a 5 minute one. A stall that lands next to an engine frame drop was
+    the machine struggling; one that arrives on its own points at the path the input
+    and packets take.
+    """
+    minutes = max(session.length_s, 1.0) / 60
+    hitches = session.hitches
+    ticks = [e.at for e in session.events if e.kind == TICK]
+    paired = sum(1 for h in hitches if any(abs(h.at - t) <= PAIRED_WINDOW_S for t in ticks))
+
+    d = Diagnosis(
+        stalls=len(hitches),
+        minutes=minutes,
+        per_minute=len(hitches) / minutes,
+        worst_ms=session.worst_hitch,
+        lost_ms=session.total_stall_ms,
+        paired=paired,
+        confident=minutes >= 4 and len(hitches) >= 3,
+    )
+
+    if d.per_minute < 0.4:
+        d.verdict = "smooth"
+    elif d.per_minute < 1.5:
+        d.verdict = "noticeable"
+    else:
+        d.verdict = "rough"
+
+    if not hitches:
+        d.cause = "nothing to explain"
+        d.advice = "the game reported no input stalls. play longer to be sure."
+        return d
+
+    # A split near half is genuinely two problems, so it should not be reported as one.
+    if 0.35 < d.paired_ratio < 0.65:
+        d.cause = "a bit of both"
+        d.advice = (
+            f"{paired} of {len(hitches)} stalls came with engine frame drops and the rest "
+            "did not, so some are your machine and some are the path in and out."
+        )
+        d.fix_ids = tuple(dict.fromkeys(LOCAL_FIXES + INPUT_FIXES))
+    elif d.paired_ratio >= 0.65:
+        d.cause = "your pc, not the connection"
+        d.advice = (
+            f"{paired} of {len(hitches)} stalls happened while the engine was also missing "
+            "frames, so the machine was busy rather than the network being late."
+        )
+        d.fix_ids = LOCAL_FIXES
+    elif session.bad_connections:
+        d.cause = "the connection"
+        d.advice = (
+            f"the game logged {len(session.bad_connections)} connection warnings and most "
+            "stalls arrived without frame drops, so packets were late."
+        )
+        d.fix_ids = NETWORK_FIXES
+    else:
+        d.cause = "the input and network path"
+        d.advice = (
+            f"{len(hitches) - paired} of {len(hitches)} stalls arrived with the engine running "
+            "fine, so the delay was in getting input and packets in and out."
+        )
+        d.fix_ids = INPUT_FIXES
+
+    if not d.confident:
+        d.advice += " this session was short, so treat it as a hint rather than proof."
+    return d
+
+
+# --- saved sessions -------------------------------------------------------------------
+
+
+def sessions_dir() -> Path:
+    root = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "MeglaPing" / "sessions"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def save_session(session: Session, diagnosis: Diagnosis) -> Path | None:
+    """Keep the numbers, not the event list, so comparisons stay small and quick."""
+    if not session.events:
+        return None
+    path = sessions_dir() / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
+    path.write_text(json.dumps({
+        "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "server": session.server,
+        "minutes": round(diagnosis.minutes, 1),
+        "stalls": diagnosis.stalls,
+        "per_minute": round(diagnosis.per_minute, 2),
+        "worst_ms": round(diagnosis.worst_ms),
+        "lost_ms": round(diagnosis.lost_ms),
+        "paired": diagnosis.paired,
+        "verdict": diagnosis.verdict,
+        "cause": diagnosis.cause,
+    }, indent=2), encoding="utf-8")
+    return path
+
+
+def recent_sessions(limit: int = 10) -> list[dict]:
+    out = []
+    for path in sorted(sessions_dir().glob("*.json"), reverse=True)[:limit]:
+        try:
+            out.append(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return out
+
+
+def compare(new: dict, old: dict) -> tuple[str, str]:
+    """(verdict, explanation) for a session against the one before it."""
+    before, after = old.get("per_minute", 0.0), new.get("per_minute", 0.0)
+    if before == 0 and after == 0:
+        return "same", "no stalls in either session."
+    change = after - before
+    # Rates from short sessions bounce around, so ignore small moves.
+    if abs(change) < 0.2 or (before and abs(change) / before < 0.2):
+        return "same", f"about the same, {after:.1f} stalls per minute against {before:.1f} before."
+    if change < 0:
+        return "better", (
+            f"stalls fell from {before:.1f} to {after:.1f} per minute, "
+            f"and the worst dropped from {old.get('worst_ms', 0):.0f} to {new.get('worst_ms', 0):.0f} ms."
+        )
+    return "worse", (
+        f"stalls rose from {before:.1f} to {after:.1f} per minute. "
+        "if you changed settings, restore them and measure again."
+    )
