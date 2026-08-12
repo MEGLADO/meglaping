@@ -441,3 +441,23 @@ def test_ingame_missing_log_is_not_an_error(tmp_path):
     assert not watcher.available
     assert watcher.poll() == []
     assert "not found" in watcher.error
+
+
+def test_ingame_says_whether_it_is_live_or_a_past_session(tmp_path, monkeypatch):
+    """Showing an old session as if it were live is the whole confusion to avoid."""
+    from meglaping import ingame
+
+    (tmp_path / "Launch.log").write_text(INGAME_LOG, encoding="utf-8")
+
+    monkeypatch.setattr(ingame, "is_running", lambda: True)
+    live = ingame.Watcher(tmp_path)
+    live.poll()
+    assert live.session.live
+    assert "watching live" in live.session.source
+
+    monkeypatch.setattr(ingame, "is_running", lambda: False)
+    past = ingame.Watcher(tmp_path)
+    past.poll()
+    assert not past.session.live
+    assert "last session" in past.session.source
+    assert past.session.length_s > 0

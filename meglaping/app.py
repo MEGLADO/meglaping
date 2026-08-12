@@ -414,10 +414,11 @@ class MeglaPing(App):
     async def _show_ingame(self) -> None:
         await self._clear_body()
         body = self.query_one("#body", VerticalScroll)
+        await body.mount(Static("", id="ingame-source"))
         await body.mount(Static("", id="ingame-stats"))
         await body.mount(Label("what the game reported", classes="section"))
         table = DataTable(cursor_type="row", zebra_stripes=True, id="ingame-events")
-        table.add_columns("at", "what", "how long", "detail")
+        table.add_columns("when", "what", "how long", "detail")
         await body.mount(table)
 
         self.watcher.poll()  # everything so far this session
@@ -425,7 +426,9 @@ class MeglaPing(App):
         self.watch_timer = self.set_interval(2.0, self._tick_ingame)
         self.query_one("#btn-ingame", Button).label = "stop"
         self._set_status(
-            "following launch.log. play a match, problems appear here as the game reports them."
+            "watching live, new problems appear as they happen."
+            if self.watcher.session.live
+            else "showing your last session. leave this open and start the game to watch live."
         )
 
     def _tick_ingame(self) -> None:
@@ -447,7 +450,7 @@ class MeglaPing(App):
         for event in list(reversed(session.events))[:200]:
             colour = {"bad": BAD, "warn": WARN}.get(event.severity, MUTED)
             table.add_row(
-                f"{event.at:.0f}s",
+                f"{int(event.at) // 60}:{int(event.at) % 60:02d}",
                 f"[{colour}]{event.kind}[/]",
                 f"{event.ms:.0f} ms" if event.ms else "-",
                 event.detail,
@@ -465,6 +468,10 @@ class MeglaPing(App):
         if session.server:
             parts.append(f"server {session.server}")
         stats.update("   ".join(parts))
+        tone = GOOD if session.live else MUTED
+        self.query_one("#ingame-source", Static).update(
+            f"[{tone}]{session.source}[/]   session length {int(session.length_s) // 60} min"
+        )
         if not initial:
             self._set_status(session.summary())
 

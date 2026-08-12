@@ -19,6 +19,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .host import is_game_running as is_running
+
 HITCH = "hitch"
 BAD_CONNECTION = "connection"
 TICK = "tick"
@@ -65,6 +67,9 @@ class Session:
     server: str = ""
     server_ip: str = ""
     started: float = field(default_factory=time.time)
+    live: bool = False          # the game is running and still writing
+    length_s: float = 0.0       # how far into the session the last event was
+    age_minutes: float = 0.0    # how long ago the log was last written
 
     def add(self, event: Event) -> None:
         self.events.append(event)
@@ -90,6 +95,15 @@ class Session:
         """The ping the game last reported for itself. 0 when it never complained."""
         pings = [e.ms for e in self.bad_connections]
         return pings[-1] if pings else 0.0
+
+    @property
+    def source(self) -> str:
+        """Whether these numbers are being written now or come from a finished session."""
+        if self.live:
+            return "rocket league is running, watching live"
+        if self.age_minutes < 90:
+            return f"rocket league is closed. this is your last session, ended {self.age_minutes:.0f} min ago"
+        return f"rocket league is closed. this is your last session, from {self.age_minutes / 60:.0f} hours ago"
 
     def summary(self) -> str:
         if not self.events:
@@ -132,7 +146,10 @@ class Watcher:
             self.error = "launch.log not found, start rocket league once"
             return []
         try:
-            size = self.path.stat().st_size
+            stat = self.path.stat()
+            self.session.age_minutes = max(0.0, (time.time() - stat.st_mtime) / 60)
+            self.session.live = is_running()
+            size = stat.st_size
             if size < self.position:  # the game restarted and began a new log
                 self.position = 0
                 self.session = Session()
@@ -148,6 +165,8 @@ class Watcher:
         fresh = list(self._parse(chunk))
         for event in fresh:
             self.session.add(event)
+        if self.session.events:
+            self.session.length_s = self.session.events[-1].at
         return fresh
 
     def _parse(self, chunk: str):
