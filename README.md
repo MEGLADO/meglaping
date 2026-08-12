@@ -54,6 +54,10 @@ press `i` again when you are done and it writes a report:
 - the fixes that target that cause, already picked.
 - how this session compares to your last one.
 
+once every setting is already correct the report stops suggesting settings and names
+what else is running instead. overlays are called out separately because they draw into
+the game every frame, so they produce stalls that look like the machine struggling.
+
 so the loop is: play a match, read the report, apply the fixes, restart, play another,
 and the next report tells you whether it actually helped. short sessions are labelled as
 a hint rather than proof, and comparisons ignore small moves because stall rates bounce
@@ -73,8 +77,8 @@ it also refuses to apply popular tweaks that do nothing here. nagle's algorithm 
 | problem | settings |
 |---|---|
 | packet loss | energy efficient ethernet, flow control, interrupt moderation, network throttling, pcie power saving |
-| input lag | one-frame thread lag, game dvr, mouse acceleration, usb selective suspend, minimum cpu state |
-| reported only | wi-fi vs wired, adapter errors, path mtu, vpn on your route, netcode rates, best region |
+| input lag | one-frame thread lag, game dvr, game mode, mouse acceleration, usb selective suspend, minimum cpu state |
+| reported only | wi-fi vs wired, adapter errors, path mtu, vpn on your route, netcode rates, best region, background programs and overlays |
 
 
 ## restore

@@ -12,7 +12,7 @@ from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import Button, DataTable, Footer, Label, SelectionList, Static
 
-from . import host, ingame, netprobe, rlgame, tweaks
+from . import background, host, ingame, netprobe, rlgame, tweaks
 from . import score as scoring
 from .tweaks import ACTION, HIGH, INFO, LOW, MEDIUM, OK, UNSUPPORTED
 
@@ -533,11 +533,21 @@ class MeglaPing(App):
         else:
             already = [t.title for t in tweaks.TWEAKS if t.id in diagnosis.fix_ids]
             await body.mount(Static(
-                "the settings that would help are already set: " + ", ".join(already[:4])
-                + ".\nwhat is left is outside meglaping, usually background programs or hardware.",
+                "every setting that would help is already correct: " + ", ".join(already[:4]) + ".",
                 classes="callout ok",
             ))
-            self._set_status("nothing left to change for this. play another session to compare.")
+            # With the settings exhausted, whatever is left is another program.
+            what, advice = background.summarise(background.running())
+            if advice:
+                await body.mount(Label("what is left", classes="section"))
+                await body.mount(Static(f"[b]{what}[/]\n{advice}", classes="callout"))
+                self._set_status("no settings left to change. close what is listed and play again.")
+            else:
+                await body.mount(Static(
+                    "nothing heavy is running either, so the rest is your hardware or the "
+                    "server itself.", classes="callout ok",
+                ))
+                self._set_status("nothing left to change for this. play another session to compare.")
 
     # --- apply --------------------------------------------------------------------
 

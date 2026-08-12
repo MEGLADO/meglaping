@@ -526,3 +526,31 @@ def test_comparison_ignores_small_moves():
     better, _ = ingame.compare({"per_minute": 0.4, "worst_ms": 150}, {"per_minute": 1.6, "worst_ms": 400})
     worse, _ = ingame.compare({"per_minute": 2.0, "worst_ms": 500}, {"per_minute": 0.5, "worst_ms": 200})
     assert (same, better, worse) == ("same", "better", "worse")
+
+
+def test_background_flags_overlays_above_heavy_programs():
+    from meglaping import background
+
+    progs = [
+        background.Program("chrome", "chrome", 20, 2000),
+        background.Program("EOSOverlayRenderer-Win64-Shipping", "epic games overlay", 9, 400, is_overlay=True),
+    ]
+    what, advice = background.summarise(progs)
+    assert "epic games overlay" in what and "chrome" in what
+    assert "overlays draw into the game" in advice
+
+
+def test_background_ignores_a_light_machine():
+    from meglaping import background
+
+    what, advice = background.summarise([background.Program("chrome", "chrome", 1, 120)])
+    assert advice == "" and what == "nothing heavy running"
+
+
+def test_background_only_reports_known_names():
+    """Listing every process would be noise, so the catalogue is the filter."""
+    from meglaping import background
+
+    assert "chrome" in background.HUNGRY
+    assert "EOSOverlayRenderer-Win64-Shipping" in background.OVERLAYS
+    assert set(background.OVERLAYS) & set(background.HUNGRY) == set()

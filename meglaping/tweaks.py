@@ -17,7 +17,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import rlgame
+from . import background, rlgame
 from .host import HostInfo, is_game_running, ps_json, ps_run
 
 OK, ACTION, INFO, UNSUPPORTED, BLOCKED = "ok", "action", "info", "unsupported", "blocked"
@@ -366,6 +366,22 @@ class MousePrecision(RegTweak):
         return "off" if value == "0" else "on"
 
 
+class GameMode(RegTweak):
+    id = "game-mode-on"
+    hive = winreg.HKEY_CURRENT_USER
+    path = r"Software\Microsoft\GameBar"
+    name = "AutoGameModeEnabled"
+    value = "1"
+    title = "windows game mode"
+    category = INPUT_LAG
+    impact = MEDIUM
+    symptom = "background apps steal time from the game"
+    detail = "tells windows to give the game priority and hold back background work while you play."
+
+    def describe(self, value: str) -> str:
+        return {"0": "off", "1": "on"}.get(value, value)
+
+
 class OneFrameThreadLag(IniTweak):
     id = "one-frame-thread-lag"
     key = "OneFrameThreadLag"
@@ -422,7 +438,8 @@ class PcieAspm(PowerTweak):
 TWEAKS: list[Tweak] = [
     EnergyEfficientEthernet(), FlowControl(), InterruptModeration(),
     NetworkThrottling(), PcieAspm(),
-    OneFrameThreadLag(), GameDVR(), MousePrecision(), UsbSelectiveSuspend(), ProcessorMinState(),
+    OneFrameThreadLag(), GameDVR(), GameMode(), MousePrecision(), UsbSelectiveSuspend(),
+    ProcessorMinState(),
 ]
 
 BY_ID = {t.id: t for t in TWEAKS}
@@ -502,6 +519,18 @@ def checks(ctx: Ctx, counters: dict | None = None, mtu: int | None = None) -> li
             "replication 60/s, input 60/s", HIGH,
             "" if best else "below maximum. raise 'client send rate' in the game's gameplay settings.",
             symptom="" if best else "the server corrects your car more often",
+        ))
+
+    programs = background.running()
+    what, advice = background.summarise(programs)
+    if programs:
+        overlays = [p for p in programs if p.is_overlay]
+        heavy = [p for p in programs if not p.is_overlay and p.memory_mb >= background.HEAVY_MB]
+        out.append(_finding(
+            "background-load", INPUT_LAG, "other programs running",
+            ACTION if (overlays or heavy) else OK, what, "overlays off, browsers closed",
+            HIGH if overlays else MEDIUM if heavy else LOW, advice,
+            symptom="stutter that no setting fixes" if (overlays or heavy) else "",
         ))
 
     if game.game_scores:
