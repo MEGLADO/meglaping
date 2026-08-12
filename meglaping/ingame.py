@@ -218,6 +218,7 @@ class Diagnosis:
     verdict: str = ""        # smooth / noticeable / rough
     cause: str = ""          # what the pattern points at
     advice: str = ""
+    feels_like: str = ""
     fix_ids: tuple[str, ...] = ()
     confident: bool = True   # False when the session was too short to trust
 
@@ -261,6 +262,8 @@ def diagnose(session: Session) -> Diagnosis:
         d.advice = "the game reported no input stalls. play longer to be sure."
         return d
 
+    d.feels_like = _feels_like(d.worst_ms)
+
     # A split near half is genuinely two problems, so it should not be reported as one.
     if 0.35 < d.paired_ratio < 0.65:
         d.cause = "a bit of both"
@@ -294,6 +297,31 @@ def diagnose(session: Session) -> Diagnosis:
     if not d.confident:
         d.advice += " this session was short, so treat it as a hint rather than proof."
     return d
+
+
+def _feels_like(worst_ms: float) -> str:
+    """What a stall of this size does to the game.
+
+    The client sends input 60 times a second. While the input buffer is stalled nothing
+    goes out, so the server keeps simulating your car from the last input it had. Your
+    screen shows the touch you made locally, the server never saw you there, and the
+    ball carries on as if you missed.
+    """
+    if worst_ms < 120:
+        return ""
+    missed = int(worst_ms / 1000 * 60)
+    if worst_ms >= 250:
+        return (
+            f"a {worst_ms:.0f} ms stall is about {missed} inputs that never reached the server "
+            "on time. this is what makes the ball pass through your car: you hit it on your "
+            "screen, the server was still playing the last input it had, so the touch never "
+            "happened for anyone else. your ping does not move, because the delay is before "
+            "the packet leaves your pc."
+        )
+    return (
+        f"a {worst_ms:.0f} ms stall is roughly {missed} inputs arriving late, which reads in "
+        "game as a touch that feels slightly off rather than a clean miss."
+    )
 
 
 # --- saved sessions -------------------------------------------------------------------

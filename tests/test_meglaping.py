@@ -554,3 +554,18 @@ def test_background_only_reports_known_names():
     assert "chrome" in background.HUNGRY
     assert "EOSOverlayRenderer-Win64-Shipping" in background.OVERLAYS
     assert set(background.OVERLAYS) & set(background.HUNGRY) == set()
+
+
+def test_big_stalls_explain_the_phase_through_symptom():
+    """A long stall is the mechanism behind a touch that never registers."""
+    from meglaping import ingame
+
+    bad = ingame.diagnose(_session([(60, 450)], length=600))
+    assert "pass through" in bad.feels_like
+    assert "ping does not move" in bad.feels_like
+
+    mild = ingame.diagnose(_session([(60, 150)], length=600))
+    assert "pass through" not in mild.feels_like and "slightly off" in mild.feels_like
+
+    none = ingame.diagnose(_session([(60, 90)], length=600))
+    assert none.feels_like == "", "a stall under two frames is not worth explaining"

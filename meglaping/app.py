@@ -502,6 +502,17 @@ class MeglaPing(App):
         await body.mount(Label("what is causing it", classes="section"))
         await body.mount(Static(f"[b]{diagnosis.cause}[/]\n{diagnosis.advice}", classes="callout"))
 
+        if diagnosis.feels_like:
+            await body.mount(Label("what that feels like in game", classes="section"))
+            await body.mount(Static(diagnosis.feels_like, classes="callout"))
+
+        # Check the server actually played on, so "it is not the network" is measured
+        # rather than assumed. Short samples miss the rare loss that causes this.
+        if session.server_ip:
+            await body.mount(Label("was it the connection", classes="section"))
+            await body.mount(Static("checking the server you played on...", id="net-verdict", classes="callout"))
+            self._confirm_network(session.server_ip, session.server)
+
         if previous:
             verdict, why = ingame.compare(
                 {"per_minute": diagnosis.per_minute, "worst_ms": diagnosis.worst_ms}, previous[0]
@@ -548,6 +559,31 @@ class MeglaPing(App):
                     "server itself.", classes="callout ok",
                 ))
                 self._set_status("nothing left to change for this. play another session to compare.")
+
+    @work(thread=True)
+    def _confirm_network(self, ip: str, label: str) -> None:
+        """Long enough to catch the occasional lost packet a short sample would miss."""
+        stats = netprobe.measure(ip, count=400, interval=0.03, label=label)
+        self.call_from_thread(self._show_network_verdict, stats, label)
+
+    def _show_network_verdict(self, stats, label: str) -> None:
+        try:
+            widget = self.query_one("#net-verdict", Static)
+        except Exception:
+            return  # the view moved on while the probe was running
+        if not stats.alive:
+            widget.update(f"[{MUTED}]{label or 'that server'} ignores ping, so this is inconclusive.[/]")
+            return
+        clean = stats.loss_pct < 0.5 and stats.ipdv < 5
+        tone = GOOD if clean else BAD
+        verdict = "no, your connection is fine" if clean else "yes, the connection is part of it"
+        tail = ("so the stalls above happen on your pc, before anything is sent."
+                if clean else "fix the loss first, settings will not help until it is gone.")
+        widget.update(
+            f"[b][{tone}]{verdict}[/][/]\n"
+            f"{stats.sent} packets to {label or 'the server'}: {stats.loss_pct:.1f}% lost, "
+            f"{stats.median:.0f} ms, {stats.ipdv:.1f} ms jitter, worst {stats.worst:.0f} ms.\n{tail}"
+        )
 
     # --- apply --------------------------------------------------------------------
 
