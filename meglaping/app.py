@@ -12,7 +12,7 @@ from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import Button, DataTable, Footer, Label, SelectionList, Static
 
-from . import host, netprobe, rlgame, tweaks
+from . import host, ingame, netprobe, rlgame, tweaks
 from . import score as scoring
 from .tweaks import ACTION, HIGH, INFO, LOW, MEDIUM, OK, UNSUPPORTED
 
@@ -136,6 +136,7 @@ class MeglaPing(App):
         ("s", "scan", "scan"),
         ("m", "measure", "measure"),
         ("f", "apply", "fix"),
+        ("i", "ingame", "in-game"),
         ("r", "restore", "restore"),
         ("space", "toggle", "pick"),
         ("q", "quit", "quit"),
@@ -146,6 +147,8 @@ class MeglaPing(App):
         self.ctx: tweaks.Ctx | None = None
         self.findings: list[tweaks.Finding] = []
         self.selected: set[str] = set()
+        self.watcher: ingame.Watcher | None = None
+        self.watch_timer = None
 
     def compose(self) -> ComposeResult:
         yield Static(logo_lines(), id="logo")
@@ -157,6 +160,7 @@ class MeglaPing(App):
             with Horizontal(id="toolbar"):
                 yield Button("scan", id="btn-scan")
                 yield Button("measure", id="btn-measure")
+                yield Button("in-game", id="btn-ingame")
                 yield Button("fix", id="btn-apply", variant="primary")
                 yield Button("restore", id="btn-restore")
             yield Static("starting...", id="status")
@@ -170,7 +174,8 @@ class MeglaPing(App):
     @on(Button.Pressed, "#toolbar Button")
     def _toolbar(self, event: Button.Pressed) -> None:
         {"btn-scan": self.action_scan, "btn-measure": self.action_measure,
-         "btn-apply": self.action_apply, "btn-restore": self.action_restore}[event.button.id]()
+         "btn-ingame": self.action_ingame, "btn-apply": self.action_apply,
+         "btn-restore": self.action_restore}[event.button.id]()
 
     # --- helpers ------------------------------------------------------------------
 
@@ -188,7 +193,14 @@ class MeglaPing(App):
             self._set_status(message)
 
     async def _clear_body(self) -> None:
+        self._stop_watching()
         await self.query_one("#body", VerticalScroll).remove_children()
+
+    def _stop_watching(self) -> None:
+        if self.watch_timer is not None:
+            self.watch_timer.stop()
+            self.watch_timer = None
+        self.query_one("#btn-ingame", Button).label = "in-game"
 
     def _banner(self) -> str:
         h = self.ctx.host if self.ctx else None
@@ -383,6 +395,78 @@ class MeglaPing(App):
             await body.mount(Label(note, classes="callout"))
         self._set_title(f"connection score - {result.total:.0f} out of 100")
         self._set_status("fix your settings, then measure again to compare.")
+
+    # --- in-game ------------------------------------------------------------------
+
+    def action_ingame(self) -> None:
+        """Toggle following the game's own telemetry."""
+        if self.watch_timer is not None:
+            self._stop_watching()
+            self._set_status(f"stopped. {self.watcher.session.summary()}" if self.watcher else "stopped.")
+            return
+        self.watcher = ingame.Watcher(self.ctx.host.rl_logs if self.ctx else None)
+        if not self.watcher.available:
+            self._set_status("launch.log not found, start rocket league once so it writes one.")
+            return
+        self._set_title("in-game scanner")
+        self.run_worker(self._show_ingame(), exclusive=False)
+
+    async def _show_ingame(self) -> None:
+        await self._clear_body()
+        body = self.query_one("#body", VerticalScroll)
+        await body.mount(Static("", id="ingame-stats"))
+        await body.mount(Label("what the game reported", classes="section"))
+        table = DataTable(cursor_type="row", zebra_stripes=True, id="ingame-events")
+        table.add_columns("at", "what", "how long", "detail")
+        await body.mount(table)
+
+        self.watcher.poll()  # everything so far this session
+        self._render_ingame(initial=True)
+        self.watch_timer = self.set_interval(2.0, self._tick_ingame)
+        self.query_one("#btn-ingame", Button).label = "stop"
+        self._set_status(
+            "following launch.log. play a match, problems appear here as the game reports them."
+        )
+
+    def _tick_ingame(self) -> None:
+        if not self.watcher:
+            return
+        if self.watcher.poll():
+            self._render_ingame()
+
+    def _render_ingame(self, initial: bool = False) -> None:
+        session = self.watcher.session
+        try:
+            table = self.query_one("#ingame-events", DataTable)
+            stats = self.query_one("#ingame-stats", Static)
+        except Exception:
+            return  # the view was replaced while a poll was in flight
+
+        # Newest first, and only the recent tail so a long session stays readable.
+        table.clear()
+        for event in list(reversed(session.events))[:200]:
+            colour = {"bad": BAD, "warn": WARN}.get(event.severity, MUTED)
+            table.add_row(
+                f"{event.at:.0f}s",
+                f"[{colour}]{event.kind}[/]",
+                f"{event.ms:.0f} ms" if event.ms else "-",
+                event.detail,
+            )
+
+        worst = session.worst_hitch
+        tone = GOOD if worst < 100 else WARN if worst < 250 else BAD
+        parts = [
+            f"input stalls [{tone}]{len(session.hitches)}[/]",
+            f"worst [{tone}]{worst:.0f} ms[/]" if worst else "worst [dim]none[/]",
+            f"lost {session.total_stall_ms / 1000:.1f}s",
+        ]
+        if session.game_ping_ms:
+            parts.append(f"game ping {session.game_ping_ms:.0f} ms")
+        if session.server:
+            parts.append(f"server {session.server}")
+        stats.update("   ".join(parts))
+        if not initial:
+            self._set_status(session.summary())
 
     # --- apply --------------------------------------------------------------------
 

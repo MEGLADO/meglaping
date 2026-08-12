@@ -253,7 +253,7 @@ def test_status_bar_and_footer_do_not_overlap():
             footer = app.query_one("Footer").region
             assert status.y != footer.y, "status bar is hidden behind the footer"
             assert {b.id for b in app.query("#toolbar Button")} == {
-                "btn-scan", "btn-measure", "btn-apply", "btn-restore",
+                "btn-scan", "btn-measure", "btn-ingame", "btn-apply", "btn-restore",
             }
             # toolbar sits below the content now
             assert app.query_one("#toolbar").region.y > app.query_one("#body").region.y
@@ -289,8 +289,9 @@ def test_only_fixable_rows_can_be_picked():
     async def check():
         app = MeglaPing()
         async with app.run_test(size=(120, 40)) as pilot:
+            # findings is set before the tables mount, so wait for the focus itself
             for _ in range(80):
-                if app.findings:
+                if any(t.has_focus for t in app.query("DataTable")):
                     break
                 await pilot.pause(0.25)
 
@@ -380,3 +381,63 @@ def test_logo_matches_the_icon_artwork():
     rendered = logo_lines()
     assert rendered.count("\n") == 2, "the mark should occupy three text rows"
     assert "meglaping" in rendered
+
+
+INGAME_LOG = """[0058.60] Party: HandleServerReserved (Reservation=(ServerName="EU7-ABC-Voxel",Region="EU"),GameURL="18.133.164.79:7746")
+[0073.09] NetworkInputBuffer: Hitch detected! 565.1703ms
+[0060.07] DevNet: Bad connection: IP=13.49.162.1:7778 Name=someone State=3 Ping=0.028667 ReceiveTime=0.642830 AckTime=1.643855
+[0057.91] DevOnline: EOSSDK-LogEOSRTC: TickTracker Tick is delayed. MaxTickInterval=[0.202314s] MaxExecutionTime=[0.000166s]
+[0058.00] DevOnline: EOSSDK-LogEOSRTC: TickTracker Tick is delayed. MaxTickInterval=[0.010000s] MaxExecutionTime=[0.000166s]
+"""
+
+
+def test_ingame_reads_the_games_own_telemetry(tmp_path):
+    from meglaping import ingame
+
+    (tmp_path / "Launch.log").write_text(INGAME_LOG, encoding="utf-8")
+    watcher = ingame.Watcher(tmp_path)
+    events = watcher.poll()
+    kinds = [e.kind for e in events]
+
+    assert kinds.count(ingame.HITCH) == 1
+    assert kinds.count(ingame.BAD_CONNECTION) == 1
+    assert kinds.count(ingame.TICK) == 1, "a 10ms tick is not a stutter and must be ignored"
+    assert watcher.session.worst_hitch == pytest.approx(565.17, abs=0.1)
+    assert watcher.session.game_ping_ms == pytest.approx(28.667, abs=0.01)
+    assert watcher.session.server == "EU7"
+    assert not watcher.poll(), "a second poll must not repeat events"
+
+
+def test_ingame_follows_new_lines(tmp_path):
+    from meglaping import ingame
+
+    log = tmp_path / "Launch.log"
+    log.write_text(INGAME_LOG, encoding="utf-8")
+    watcher = ingame.Watcher(tmp_path)
+    watcher.poll()
+    with open(log, "a", encoding="utf-8") as handle:
+        handle.write("[0090.00] NetworkInputBuffer: Hitch detected! 120.0ms\n")
+    fresh = watcher.poll()
+    assert len(fresh) == 1 and fresh[0].ms == pytest.approx(120.0)
+
+
+def test_ingame_handles_the_game_restarting(tmp_path):
+    """A new launch truncates the log, so the reader must start over."""
+    from meglaping import ingame
+
+    log = tmp_path / "Launch.log"
+    log.write_text(INGAME_LOG, encoding="utf-8")
+    watcher = ingame.Watcher(tmp_path)
+    watcher.poll()
+    log.write_text("[0001.00] NetworkInputBuffer: Hitch detected! 200.0ms\n", encoding="utf-8")
+    fresh = watcher.poll()
+    assert len(fresh) == 1 and watcher.session.worst_hitch == pytest.approx(200.0)
+
+
+def test_ingame_missing_log_is_not_an_error(tmp_path):
+    from meglaping import ingame
+
+    watcher = ingame.Watcher(tmp_path / "nope")
+    assert not watcher.available
+    assert watcher.poll() == []
+    assert "not found" in watcher.error

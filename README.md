@@ -16,6 +16,7 @@ when it is wrong**, what it is now, and what it should be.
 |---|---|
 | `s` | scan, changes nothing |
 | `m` | measure your connection and score it |
+| `i` | in-game scanner, read what the game reports while you play |
 | `f` | fix the settings you picked |
 | `r` | restore, put settings back |
 | `space` | pick or unpick a row |
@@ -30,11 +31,25 @@ restart itself elevated.
 **restart your pc after applying.** network card settings only take effect once the
 adapter restarts, and some windows settings need a reboot.
 
+## in-game scanner
+
+rocket league writes its own problems to `Launch.log` as they happen, and the scanner
+follows that file while you play:
+
+- `Hitch detected! 565ms` is the game's own input buffer stalling. this is measured
+  input lag, not a guess from pinging a server.
+- `Bad connection ... Ping=0.030` is the ping the game itself is using, plus how long
+  it waited for the server to acknowledge.
+- delayed engine ticks, which is the game missing frames.
+
+press `i` and play. every problem the game reports appears with how long it lasted, and
+you get a session total: how many stalls, the worst one, and how much time you lost.
+
 ## what it can and cannot see
 
-nothing outside the game can measure true input lag or desync. what it can measure is
-ping, jitter, packet loss, path mtu and adapter errors, plus the settings known to cause
-those symptoms.
+the scanner reads what the game measures. everything else is measured from outside, so
+ping, jitter, packet loss, path mtu and adapter errors are real numbers, while the
+settings audit lists known causes rather than proof.
 
 it also refuses to apply popular tweaks that do nothing here. nagle's algorithm and
 `tcpackfrequency` only affect tcp, and rocket league's gameplay traffic is udp.
